@@ -1,0 +1,452 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dropbox Photo Slideshow</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background-color: #000000;
+            color: #ffffff;
+        }
+        #slideshow-container {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+        #slideshow-image {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+            image-rendering: optimizeQuality;
+        }
+        #controls {
+            position: fixed;
+            bottom: 20px;
+            display: flex;
+            justify-content: center;
+            z-index: 10;
+        }
+        #input-container {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            z-index: 10;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background-color: #007ee5;
+            color: white;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #1e90ff;
+        }
+        button:disabled {
+            background-color: #666666;
+            cursor: not-allowed;
+        }
+        #auth-message {
+            position: fixed;
+            top: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 5px;
+            color: #ffffff;
+            text-align: center;
+            z-index: 10;
+        }
+        #folder-input {
+            padding: 8px;
+            font-size: 14px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            background-color: #333333;
+            color: #ffffff;
+            width: 250px;
+        }
+        @media (max-width: 600px) {
+            button {
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+            #auth-message {
+                font-size: 14px;
+                padding: 8px 16px;
+            }
+            #folder-input {
+                width: 80%;
+                font-size: 12px;
+            }
+            #controls {
+                bottom: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="auth-message">Enter a Dropbox folder path (e.g., '/Photos') and click 'Connect to Dropbox' to start the slideshow</div>
+    <div id="slideshow-container">
+        <img id="slideshow-image" src="" alt="Slideshow Image" style="display: none;">
+    </div>
+    <div id="controls">
+        <button id="play-pause-button" style="display: none;">Play</button>
+    </div>
+    <div id="input-container">
+        <input id="folder-input" type="text" placeholder="Enter Dropbox folder path (e.g., /Photos)" value="">
+        <button id="connect-button">Connect to Dropbox</button>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/dropbox@10.34.0/dist/Dropbox-sdk.min.js"></script>
+    <script>
+        // Fallback if primary CDN fails
+        if (typeof Dropbox === 'undefined') {
+            document.getElementById('auth-message').textContent = 'Primary Dropbox SDK failed to load. Attempting fallback...';
+            const script = document.createElement('script');
+            script.src = 'https://unpkg.com/dropbox@10.34.0/dist/Dropbox-sdk.min.js';
+            script.onload = initializeApp;
+            script.onerror = () => {
+                document.getElementById('auth-message').textContent = 'Error: Failed to load Dropbox SDK from both sources. Check your internet or CDN availability.';
+                console.error('Failed to load Dropbox SDK from both CDNs.');
+                throw new Error('Dropbox SDK not loaded.');
+            };
+            document.head.appendChild(script);
+        } else {
+            initializeApp();
+        }
+
+        function initializeApp() {
+            // Dropbox credentials
+            const APP_KEY = '6m79m13ea8wrtnt';
+            const APP_SECRET = 'i26i3bv4udzr5d0';
+            const REFRESH_TOKEN = 'r7Pty7V0IlgAAAAAAAAAAZ2ExnvVaj6wK1ucljD0dkrGRgMQO8wTxGjIAg0BSB_e';
+            let ACCESS_TOKEN = 'sl.u.AF6BnEHT22dSX2ZJdhB3o1CBphJmJBvW8oy0k1E3V-anCVY15Sdq3cnb38MjaVRLUcJZFwNVhPVRqzwyNdTHxiny7Hp7GQqAqkP73kcjtKqPeIwsS0cW22dVJJZLdUPO32pQfLx4FL8GJn-K0OgoJMdvpzCYW1W7J80IWmf7CltMrBryZsn_okLb_yiHJZgsaAfSwoM501l0Jr1YK0a3WXmo7QJWVe5JzqbNHFbXdYxboAiyn5yWMKVcxRSBJa2Iv55lBUJe2Ogme2tz1TG3ObXmBv0jGJJhvdcrtnsmaGNtSHRXjl3bi0-p95Wej6zHE5RU2bXWKHqyu-j8XAaiWhqVEcQjQ7ntHefY0Kh1PLNQ1kGLZYcR1HSLZxb3LmAO_KiWDXaFMbPuu4DHf21V15AfJsfcJ-4ukt7SdAF-LMXWz0fhMp4WY4w93bIROtBvYgOUC-nGI5pc-5tIxLOOgXgsH7JXGuaePuVPQl--eNExLLd5SgCpJWdpnczFBoRJFatHCtYFA_B3K-6CMHbPk0kzun6tnIEvUGZSaAgzQjM2hs3Rkhq4bp6gBk1vMVsqJZKufqbGjC4wrXsrI6RYJKUeXUODum_nUzjaoozTfOLL07rq2-OhU6Im7yyLZw_lQVLowTV41vsytTetFPnYnZFgfwhJda1jF-tXXgGIuVXYn5ULUNhIEpI_qQMXvQ6yl9jwvM2gt0EfdqSD9E3Q9hwZMYt0nvlpj4Qorra-Glm7nDx72YFbmTFEGseiSKT6A5KzSZ8KT7Jtyf7oMYQYKjlFFohFk6da4uY3-dmCS1pXbliE2qoY68qUrVdosXBDf4d5CJia8kY2yA2-HTNWguAEFpZHlSUBonpbt6_S9xhaDt5Xk6g2U99MAxVxoN8Z--HfqY5Y-0FmYwnEL8pptNYL_4GYLPIUZkavNB0rg8qN_sP_tr3w66REEt6MCGKombNZ4ABkB6TG2hYPz1RrK0xeJ1EnWFi4KvUdw76TtNqFZijLOWi0sj9QmTDD1TbhAH1h_V_srjNds28tE_-vTL_FBbKbM5nOixH84tpw1OS7u_8gW6q_jPXxzuVoRz4DdTt3AIQyyJc4Ey8f4u5jEuo0hy99yeu011rNqWgR1c834J3Mw-rziNQ-BNYy9pxjkZBn34TxpaGeF735HBha7U4iA1ycgsLOfBgdtfWbECPNHruojIDOIn5dIPhoFOvso90-Ja-2bPJHIGg9zbkIipeGWggQliS-etX1je2Uc4Bf4nk6rduPy2Og8ooVYYMNEcLczWkkN9jlo8l6dvCVZuWMjg7Y9qQEaqRIm3g7MAVxYQHNo0sN97hlrNjBNFoyBiOGBSpZNgm1Yb-_QqkLOjCLiYhsVA53XV0QGzSVwXmq0b4vIaAHfwKluQkZrkfowpIt5iacTBYO7ocqRsNHf134';
+            let tokenExpiration = Date.now() + (14400 * 1000); // Set initial expiration (4 hours)
+
+            let dbx = new Dropbox.Dropbox({ accessToken: ACCESS_TOKEN });
+            let images = [];
+            let currentIndex = 0;
+            let isPlaying = false;
+            let slideshowInterval;
+            let buttonTimeout;
+
+            // Auto-hide control button after 5 seconds
+            function hideControls() {
+                clearTimeout(buttonTimeout);
+                buttonTimeout = setTimeout(() => {
+                    document.getElementById('play-pause-button').style.display = 'none';
+                }, 5000);
+            }
+
+            // Show control button if not playing
+            function showControls() {
+                if (!isPlaying) {
+                    document.getElementById('play-pause-button').style.display = 'inline-block';
+                    hideControls(); // Restart the hide timer
+                }
+            }
+
+            // Refresh access token
+            async function refreshAccessToken() {
+                try {
+                    const response = await fetch('https://api.dropboxapi.com/oauth2/token', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        },
+                        body: new URLSearchParams({
+                            grant_type: 'refresh_token',
+                            refresh_token: REFRESH_TOKEN,
+                            client_id: APP_KEY,
+                            client_secret: APP_SECRET
+                        })
+                    });
+                    const data = await response.json();
+                    if (data.error) {
+                        throw new Error(`Dropbox API error: ${data.error} - ${data.error_description || 'Unknown error'}`);
+                    }
+                    ACCESS_TOKEN = data.access_token;
+                    tokenExpiration = Date.now() + (data.expires_in * 1000);
+                    dbx = new Dropbox.Dropbox({ accessToken: ACCESS_TOKEN });
+                    console.log('Access token refreshed successfully');
+                    return true;
+                } catch (error) {
+                    console.error('Error refreshing access token:', error.message);
+                    let errorMessage = `Error refreshing access token: ${error.message}. Check credentials or network.`;
+                    if (error.message.includes('invalid_refresh_token') || error.message.includes('invalid_grant')) {
+                        errorMessage = 'Error: Invalid or revoked refresh token. Generate a new one at https://www.dropbox.com/developers/documentation/http/teams#authorization.';
+                    } else if (error.message.includes('invalid_client')) {
+                        errorMessage = 'Error: Invalid APP_KEY or APP_SECRET. Verify credentials in Dropbox App Console.';
+                    }
+                    document.getElementById('auth-message').textContent = errorMessage;
+                    document.getElementById('connect-button').disabled = false;
+                    document.getElementById('input-container').style.display = 'flex';
+                    return false;
+                }
+            }
+
+            // Check if token is expired
+            function isTokenExpired() {
+                return Date.now() >= tokenExpiration;
+            }
+
+            // Validate folder path
+            async function validateFolderPath(path) {
+                try {
+                    if (isTokenExpired()) {
+                        await refreshAccessToken();
+                    }
+                    const response = await dbx.filesListFolder({ path: path || '' });
+                    return { valid: true, entries: response.result.entries };
+                } catch (error) {
+                    console.error('Folder validation failed:', error);
+                    if (error.status === 401 || error.error?.error_summary?.includes('invalid_access_token')) {
+                        const refreshed = await refreshAccessToken();
+                        if (refreshed) {
+                            return validateFolderPath(path);
+                        }
+                    }
+                    let errorMessage = 'Error: Invalid folder or permissions. Check console for details.';
+                    if (error.status === 401 || error.error?.error_summary?.includes('invalid_access_token')) {
+                        errorMessage = 'Error: Invalid or revoked access token. Attempting to refresh.';
+                    }
+                    document.getElementById('auth-message').textContent = errorMessage;
+                    return { valid: false, error };
+                }
+            }
+
+            // Test API connection
+            async function testConnection() {
+                try {
+                    document.getElementById('connect-button').disabled = true;
+                    document.getElementById('auth-message').textContent = 'Connecting to Dropbox...';
+                    if (isTokenExpired()) {
+                        await refreshAccessToken();
+                    }
+                    const response = await dbx.usersGetCurrentAccount();
+                    console.log('Connected to Dropbox as:', response.result.name.display_name);
+                    document.getElementById('auth-message').textContent = 'Connected to Dropbox!';
+                    return true;
+                } catch (error) {
+                    console.error('Connection test failed:', error);
+                    if (error.status === 401 || error.error?.error_summary?.includes('invalid_access_token')) {
+                        const refreshed = await refreshAccessToken();
+                        if (refreshed) {
+                            return testConnection();
+                        }
+                    }
+                    let errorMessage = 'Error: Invalid access token or network issue. Check console for details.';
+                    document.getElementById('auth-message').textContent = errorMessage;
+                    document.getElementById('connect-button').disabled = false;
+                    document.getElementById('input-container').style.display = 'flex';
+                    return false;
+                }
+            }
+
+            // Fisher-Yates shuffle algorithm with seed for different selection each load
+            function shuffle(array) {
+                // Use timestamp as seed for different random selection each page load
+                let seed = Date.now();
+                const random = () => {
+                    seed = (seed * 9301 + 49297) % 233280;
+                    return seed / 233280;
+                };
+                for (let i = array.length - 1; i > 0; i--) {
+                    const j = Math.floor(random() * (i + 1));
+                    [array[i], array[j]] = [array[j], array[i]];
+                }
+                return array;
+            }
+
+            // Fetch images from Dropbox with individual link requests, limited to 200
+            async function fetchImages() {
+                try {
+                    document.getElementById('auth-message').textContent = 'Loading images...';
+                    let FOLDER_PATH = document.getElementById('folder-input').value || '';
+                    const folderValidation = await validateFolderPath(FOLDER_PATH);
+                    if (!folderValidation.valid) {
+                        document.getElementById('auth-message').textContent = `Error: Folder "${FOLDER_PATH || 'root'}" does not exist or is inaccessible. Enter a valid folder path.`;
+                        console.error('Invalid folder:', folderValidation.error);
+                        document.getElementById('connect-button').disabled = false;
+                        document.getElementById('input-container').style.display = 'flex';
+                        return;
+                    }
+                    if (isTokenExpired()) {
+                        await refreshAccessToken();
+                    }
+                    const response = await dbx.filesListFolder({ path: FOLDER_PATH });
+                    const imageEntries = response.result.entries.filter(entry =>
+                        entry.name.match(/\.(jpg|jpeg|png|gif|webp)$/i)
+                    );
+                    if (response.result.entries.length > 0 && imageEntries.length === 0) {
+                        console.log('Folder contents:', response.result.entries.map(entry => entry.name));
+                        document.getElementById('auth-message').textContent = `No supported images (jpg, jpeg, png, gif, webp) found in "${FOLDER_PATH || 'root'}". Check folder contents in console.`;
+                        document.getElementById('connect-button').disabled = false;
+                        document.getElementById('input-container').style.display = 'flex';
+                        return;
+                    }
+                    // Randomly select up to 200 images
+                    images = shuffle(imageEntries).slice(0, 200);
+                    if (images.length === 0) {
+                        document.getElementById('auth-message').textContent = `No images found in "${FOLDER_PATH || 'root'}". Ensure the folder contains images (jpg, jpeg, png, gif, webp).`;
+                        console.log('No images found. Folder contents:', response.result.entries.map(entry => entry.name));
+                        document.getElementById('connect-button').disabled = false;
+                        document.getElementById('input-container').style.display = 'flex';
+                        return;
+                    }
+                    // Fetch temporary links individually
+                    document.getElementById('auth-message').textContent = `Loading ${images.length} images...`;
+                    for (let i = 0; i < images.length; i++) {
+                        try {
+                            if (isTokenExpired()) {
+                                await refreshAccessToken();
+                            }
+                            const linkResponse = await dbx.filesGetTemporaryLink({ path: images[i].path_lower });
+                            images[i].url = linkResponse.result.link;
+                        } catch (error) {
+                            console.error(`Failed to fetch link for ${images[i].name}:`, error.status, error.error?.error_summary || error.message);
+                        }
+                    }
+                    // Filter out images without URLs
+                    images = images.filter(entry => entry.url);
+                    if (images.length === 0) {
+                        document.getElementById('auth-message').textContent = 'Error: No valid image links retrieved. Check console for details.';
+                        document.getElementById('connect-button').disabled = false;
+                        document.getElementById('input-container').style.display = 'flex';
+                        return;
+                    }
+                    document.getElementById('auth-message').style.display = 'none';
+                    document.getElementById('input-container').style.display = 'none';
+                    showImage(currentIndex);
+                    showControls();
+                } catch (error) {
+                    console.error('Error fetching images:', error);
+                    if (error.status === 401 || error.error?.error_summary?.includes('invalid_access_token')) {
+                        const refreshed = await refreshAccessToken();
+                        if (refreshed) {
+                            return fetchImages();
+                        }
+                    }
+                    let errorMessage = 'Error loading images. Check folder path, permissions, or console for details.';
+                    document.getElementById('auth-message').textContent = errorMessage;
+                    document.getElementById('connect-button').disabled = false;
+                    document.getElementById('input-container').style.display = 'flex';
+                }
+            }
+
+            // Display image at given index
+            function showImage(index) {
+                if (index < 0 || index >= images.length) return;
+                currentIndex = index;
+                document.getElementById('slideshow-image').src = images[index].url;
+                document.getElementById('slideshow-image').style.display = 'block';
+                showControls();
+            }
+
+            // Start or stop slideshow
+            function toggleSlideshow() {
+                if (isPlaying) {
+                    clearInterval(slideshowInterval);
+                    document.getElementById('play-pause-button').textContent = 'Play';
+                    document.getElementById('play-pause-button').style.display = 'inline-block';
+                } else {
+                    document.getElementById('play-pause-button').style.display = 'none';
+                    slideshowInterval = setInterval(async () => {
+                        if (isTokenExpired()) {
+                            await refreshAccessToken();
+                        }
+                        currentIndex = (currentIndex + 1) % images.length;
+                        showImage(currentIndex);
+                    }, 4000); // Change image every 4 seconds
+                    document.getElementById('play-pause-button').textContent = 'Pause';
+                }
+                isPlaying = !isPlaying;
+            }
+
+            // Event listeners for button visibility
+            let lastTap = 0;
+            document.addEventListener('mousemove', showControls);
+            document.addEventListener('touchstart', (event) => {
+                const currentTime = new Date().getTime();
+                const tapLength = currentTime - lastTap;
+                if (tapLength < 300 && tapLength > 0) {
+                    showControls();
+                }
+                lastTap = currentTime;
+            });
+
+            // Event listeners for navigation
+            document.getElementById('connect-button').addEventListener('click', async () => {
+                const isConnected = await testConnection();
+                if (isConnected) fetchImages();
+            });
+            document.getElementById('play-pause-button').addEventListener('click', toggleSlideshow);
+
+            // Keyboard navigation
+            document.addEventListener('keydown', (event) => {
+                if (event.key === ' ') {
+                    toggleSlideshow();
+                }
+            });
+        }
+    </script>
+</body>
+</html>
